@@ -16,7 +16,7 @@ class AppMain:
 
         # ========== ABA 1 ==========
         frame_rad = ttk.Frame(notebook)
-        notebook.add(frame_rad, text="1. Pré-processamento FX10")
+        notebook.add(frame_rad, text="1. Pré-processamento")
         self.tab_rad = RadiometricTab(frame_rad)
 
 
