@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from tab_radiometria import RadiometricTab
-from tab_anotacao import create_annotation_tab
+from annotation_tab import create_annotation_tab
 
 class AppMain:
     def __init__(self, root):
