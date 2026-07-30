@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from tab_radiometria import RadiometricTab
-from tab_anotacao import create_annotation_tab  # Importa a nova aba
+from tab_anotacao import create_annotation_tab
 
 class AppMain:
     def __init__(self, root):
@@ -19,10 +19,8 @@ class AppMain:
         self.tab_rad = RadiometricTab(frame_rad)
 
         # ========== ABA 2 ==========
-        # Agora adicionamos a aba de anotação
         frame_anot = ttk.Frame(notebook)
         notebook.add(frame_anot, text="2. Anotação")
-        # Usa a função para criar a aba
         self.tab_anot = create_annotation_tab(frame_anot)
 
         self._center_window()
@@ -35,6 +33,7 @@ class AppMain:
         x = (self.root.winfo_screenwidth() // 2) - (width // 2)
         y = (self.root.winfo_screenheight() // 2) - (height // 2)
         self.root.geometry(f'{width}x{height}+{x}+{y}')
+
 
 if __name__ == "__main__":
     root = tk.Tk()
