@@ -461,6 +461,7 @@ class AnnotationTab:
         self._processar_proxima_imagem()
 
     def _salvar_anotacao(self, imagem_path: str) -> None:
+        """Salva anotações em JSON, YOLO e NPY."""
         destino = self.pasta_destino.get()
         counts = self.class_manager.get_annotation_count()
         total_objetos = sum(c['total'] for c in counts.values())
@@ -468,13 +469,13 @@ class AnnotationTab:
         for cid, info in counts.items():
             self._log(f"      {info['name']}: {info['bboxes']} bboxes, {info['polygons']} polygons")
 
-        if self.persistence.save_annotations(imagem_path, destino):
-            self._log(f"   ✅ JSON salvo em annotations/")
-        else:
-            self._log(f"   ⚠️ Erro ao salvar JSON")
-
-        n_bbox, n_poly = self.persistence.export_yolo(imagem_path, destino)
-        self._log(f"💾 Salva concluída: {os.path.basename(imagem_path)} (BBox: {n_bbox}, Polygon: {n_poly})")
+        # Exporta todos os formatos
+        num_bbox, num_poly, npy_success = self.persistence.export_all(imagem_path, destino)
+        
+        self._log(f"💾 Salva concluída: {os.path.basename(imagem_path)}")
+        self._log(f"   BBox: {num_bbox}, Polygon: {num_poly}")
+        if npy_success:
+            self._log(f"   ✅ NPY salvo em annotations_npy/")
 
     def _finalizar_sessao(self) -> None:
         self._log("✅ Anotação finalizada.")

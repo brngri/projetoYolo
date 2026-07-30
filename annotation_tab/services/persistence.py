@@ -1,20 +1,23 @@
 # annotation_tab/services/persistence.py
 """
 Serviço de persistência para anotações e configurações.
-Inclui exportação YOLO.
+Inclui exportação YOLO e NPY.
 """
 
 import os
 import json
 import shutil
 import logging
+import numpy as np  # <-- ADICIONAR ESTA LINHA
 from typing import Optional, Callable, Dict, List, Tuple
+
 from ..models.class_manager import ClassManager
 
 logger = logging.getLogger("AnnotationTab.Persistence")
 
 # Constantes
 CONFIG_FILE = 'classes_config.json'
+# MAPPING_FILE = 'classes_mapping.txt'  # <--- REMOVIDO (não é mais usado)
 YOLO_MAPPING_FILE = 'yolo_classes.txt'
 
 
@@ -28,13 +31,12 @@ class AnnotationPersistence:
     # --- Configuração de classes ---
 
     def save_classes(self, destino: Optional[str] = None) -> bool:
-        """Salva configuração de classes em JSON e mapeamento."""
+        """Salva configuração de classes em JSON."""
         config_path = self._get_config_path(destino)
         try:
             data = self.class_manager.to_dict()
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
-
 
             self.log(f"✅ Configuração de classes salva em: {config_path}")
             self.log(f"   {len(data['classes'])} classes salvas")
@@ -128,13 +130,97 @@ class AnnotationPersistence:
         exporter = YoloExporter(self.class_manager, self.log)
         return exporter.export(image_path, destino)
 
+    # --- Exportação NPY (NOVO) ---
+
+    def export_npy(self, image_path: str, destino: str) -> bool:
+        """
+        Exporta anotações em formato NPY.
+        
+        Estrutura do arquivo .npy:
+        - Dicionário com chaves:
+            - 'bboxes': dict {class_id: [(x1,y1,x2,y2), ...]}
+            - 'polygons': dict {class_id: [[(x,y), ...], ...]}
+            - 'classes': dict {class_id: {'name': str, 'color': str}}
+            - 'image_shape': (height, width)
+            - 'image_path': str
+        """
+        try:
+            # Cria pasta para NPY
+            pasta_npy = os.path.join(destino, 'annotations_npy')
+            os.makedirs(pasta_npy, exist_ok=True)
+
+            nome_base = os.path.splitext(os.path.basename(image_path))[0]
+            npy_path = os.path.join(pasta_npy, nome_base + '_annotations.npy')
+
+            # Prepara dados
+            data = {
+                'image_path': image_path,
+                'image_shape': [self.class_manager._ny, self.class_manager._nx],
+                'classes': {},
+                'bboxes': {},
+                'polygons': {}
+            }
+
+            # Coleta dados de cada classe
+            for cid, info in self.class_manager.classes.items():
+                if info['is_background']:
+                    continue
+                
+                # Informações da classe
+                data['classes'][str(cid)] = {
+                    'name': info['name'],
+                    'color': info['color'],
+                    'is_background': info['is_background']
+                }
+
+                # Bboxes
+                if info['bboxes']:
+                    data['bboxes'][str(cid)] = info['bboxes']
+
+                # Polígonos
+                if info['polygons']:
+                    data['polygons'][str(cid)] = info['polygons']
+
+            # Salva como NPY
+            np.save(npy_path, data)
+            
+            # Contagem para log
+            total_bboxes = sum(len(v) for v in data['bboxes'].values())
+            total_polygons = sum(len(v) for v in data['polygons'].values())
+            
+            self.log(f"   💾 NPY salvo: {nome_base}_annotations.npy")
+            self.log(f"      BBoxes: {total_bboxes}, Polígonos: {total_polygons}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Erro ao salvar NPY: {e}")
+            self.log(f"❌ Erro ao salvar NPY: {e}")
+            return False
+
+    # --- Exportação combinada (NOVO) ---
+
+    def export_all(self, image_path: str, destino: str) -> Tuple[int, int, bool]:
+        """
+        Exporta anotações em todos os formatos (JSON, YOLO, NPY).
+        Retorna: (num_bbox, num_poly, npy_success)
+        """
+        # Exporta JSON
+        json_success = self.save_annotations(image_path, destino)
+        
+        # Exporta YOLO
+        num_bbox, num_poly = self.export_yolo(image_path, destino)
+        
+        # Exporta NPY
+        npy_success = self.export_npy(image_path, destino)
+        
+        return num_bbox, num_poly, npy_success
+
     # --- Métodos privados ---
 
     def _get_config_path(self, destino: Optional[str]) -> str:
         if destino:
             return os.path.join(destino, CONFIG_FILE)
         return CONFIG_FILE
-
 
     def _get_annotation_path(self, image_path: str, destino: str) -> str:
         nome_base = os.path.splitext(os.path.basename(image_path))[0]
@@ -267,6 +353,7 @@ class YoloExporter:
 
     def _save_mapping(self, destino: str, sorted_ids: List[int],
                       id_to_yolo: Dict[int, int]) -> None:
+        """Salva arquivo de mapeamento YOLO ID -> nome da classe."""
         mapping_path = os.path.join(destino, YOLO_MAPPING_FILE)
         with open(mapping_path, 'w', encoding='utf-8') as f:
             for cid in sorted_ids:
@@ -277,6 +364,7 @@ class YoloExporter:
 
     @staticmethod
     def load_mapping(mapping_path: str) -> Dict[int, str]:
+        """Lê o mapeamento de YOLO ID -> nome da classe."""
         mapping = {}
         if not os.path.exists(mapping_path):
             return mapping
