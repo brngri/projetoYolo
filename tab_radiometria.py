@@ -20,8 +20,6 @@ START_ROOT_DIR = r"C:\COLOQUE\A_PASTA_RAIZ_COM_AS_CAPTURES"
 START_OUT_DIR  = r"C:\COLOQUE\PASTA_DE_SAIDA_PARA_NPY_E_CSV"
 DEFAULT_FILENAME = "resumo_medias"
 
-THRESHOLD_REFLECTANCE_DEFAULT = 0.015
-
 # =========================
 # FUNÇÕES AUXILIARES
 # =========================
@@ -93,15 +91,6 @@ class RadiometricTab:
         self.log_queue = queue.Queue()
         self.processing = False  # Variável de controle para parar o processamento
         
-        # Variáveis de Configuração
-        self.threshold_var = tk.StringVar(value=str(THRESHOLD_REFLECTANCE_DEFAULT))
-        
-        # Variáveis de Blur
-        self.aplicar_blur_var = tk.BooleanVar(value=False)
-        self.tipo_blur_var = tk.StringVar(value="uniforme")
-        self.tamanho_blur_var = tk.StringVar(value="3")
-        self.sigma_blur_var = tk.StringVar(value="1.0")
-        
         # Frame geral
         outer = ttk.Frame(parent, padding=10)
         outer.pack(fill="both", expand=True)
@@ -154,37 +143,6 @@ class RadiometricTab:
         self.entry_white_dir.grid(row=1, column=1, padx=5, pady=2, sticky="we")
         btn_white = ttk.Button(config_frame, text="Browse", command=self._browse_white)
         btn_white.grid(row=1, column=2, padx=5, pady=2)
-        
-        # LINHA 2: THRESHOLD_REFLECTANCE
-        ttk.Label(config_frame, text="Limiar de Reflectância:").grid(row=2, column=0, sticky="w")
-        self.entry_threshold = ttk.Entry(config_frame, textvariable=self.threshold_var, width=10)
-        self.entry_threshold.grid(row=2, column=1, padx=5, pady=2, sticky="w")
-        
-        # LINHA 3: Configurações de Blur
-        self.blur_frame = ttk.Frame(config_frame)
-        self.blur_frame.grid(row=3, column=0, columnspan=3, sticky="we", pady=5)
-        
-        # Checkbox para aplicar blur
-        self.blur_check = ttk.Checkbutton(self.blur_frame, text="Aplicar Blur antes da correção", 
-                                         variable=self.aplicar_blur_var)
-        self.blur_check.pack(side="left", padx=(0, 10))
-        
-        # Tipo de blur
-        ttk.Label(self.blur_frame, text="Tipo:").pack(side="left", padx=(0, 5))
-        self.tipo_blur_combo = ttk.Combobox(self.blur_frame, textvariable=self.tipo_blur_var,
-                                           values=["uniforme", "gaussiano"], width=10, state="readonly")
-        self.tipo_blur_combo.pack(side="left", padx=(0, 10))
-        
-        # Tamanho do kernel
-        ttk.Label(self.blur_frame, text="Kernel:").pack(side="left", padx=(0, 5))
-        self.tamanho_blur_combo = ttk.Combobox(self.blur_frame, textvariable=self.tamanho_blur_var,
-                                              values=["3", "5", "7"], width=5, state="readonly")
-        self.tamanho_blur_combo.pack(side="left", padx=(0, 10))
-        
-        # Sigma para blur gaussiano
-        ttk.Label(self.blur_frame, text="Sigma:").pack(side="left", padx=(0, 5))
-        self.sigma_blur_entry = ttk.Entry(self.blur_frame, textvariable=self.sigma_blur_var, width=5)
-        self.sigma_blur_entry.pack(side="left", padx=(0, 10))
         
         # ====== BOTÕES DE AÇÃO ======
         action_frame = ttk.Frame(outer)
@@ -249,54 +207,11 @@ class RadiometricTab:
         self.btn_stop.config(state="disabled")
 
     # -------------------------
-    # Funções de Blur
-    # -------------------------
-    def _aplicar_blur_imagem(self, imagem: np.ndarray, tipo_blur: str, tamanho_kernel: int, sigma: float = 1.0) -> np.ndarray:
-        """
-        Aplica blur na imagem hiperespectral.
-        
-        Args:
-            imagem: Array numpy (H, W, B) com a imagem hiperespectral
-            tipo_blur: 'uniforme' ou 'gaussiano'
-            tamanho_kernel: Tamanho do kernel (3, 5, 7, etc.)
-            sigma: Parâmetro sigma para blur gaussiano
-        
-        Returns:
-            Imagem com blur aplicado
-        """
-        if imagem is None:
-            return None
-            
-        imagem_blur = np.zeros_like(imagem)
-        h, w, b = imagem.shape
-        
-        self._log(f"[BLUR] Aplicando {tipo_blur} {tamanho_kernel}x{tamanho_kernel} (sigma: {sigma})")
-        
-        for banda in range(b):
-            banda_original = imagem[:, :, banda]
-            
-            if tipo_blur == "uniforme":
-                # Blur uniforme (média)
-                imagem_blur[:, :, banda] = uniform_filter(banda_original, size=tamanho_kernel)
-            elif tipo_blur == "gaussiano":
-                # Blur gaussiano
-                imagem_blur[:, :, banda] = gaussian_filter(banda_original, sigma=sigma)
-            else:
-                # Sem blur - copia original
-                imagem_blur[:, :, banda] = banda_original
-        
-        # Estatísticas para debug
-        diff = np.mean(np.abs(imagem_blur - imagem))
-        self._log(f"[BLUR] Diferença média após blur: {diff:.6f}")
-        
-        return imagem_blur
-
-    # -------------------------
     # Processamento da Amostra Corrigida
     # -------------------------
     def _processar_amostra_corrigida(self, cube_corr: np.ndarray, sample_hdr: str, 
                                      dark_hdr: str, white_hdr: str, base_name: str, 
-                                     out_dir: str, threshold_reflectance: float):
+                                     out_dir: str):
         """Processa apenas a correção radiométrica, sem segmentação."""
         H, W, B = cube_corr.shape
         
@@ -341,8 +256,7 @@ class RadiometricTab:
             "mediana_espectral": median_spectral.tolist(),
             "parametros_correcao": {
                 "dark_ref": os.path.basename(dark_hdr),
-                "white_ref": os.path.basename(white_hdr),
-                "threshold_aplicado": threshold_reflectance
+                "white_ref": os.path.basename(white_hdr)
             },
             "arquivos_gerados": {
                 "npy": npy_filename,
@@ -379,25 +293,13 @@ class RadiometricTab:
     # -------------------------
     def _start_thread(self):
         try:
-            # Validar threshold
-            threshold = float(self.threshold_var.get())
-            if threshold < 0:
-                raise ValueError("Limiar de reflectância deve ser positivo ou zero.")
-                
-            # Validar parâmetros de blur se habilitado
-            if self.aplicar_blur_var.get():
-                try:
-                    tamanho = int(self.tamanho_blur_var.get())
-                    sigma = float(self.sigma_blur_var.get())
-                    if tamanho < 1 or tamanho % 2 == 0:
-                        raise ValueError("Tamanho do kernel deve ser ímpar e positivo")
-                    if sigma < 0:
-                        raise ValueError("Sigma deve ser positivo")
-                except ValueError as e:
-                    raise ValueError(f"Parâmetros de blur inválidos: {e}")
-                    
+            # Validação simples: apenas diretórios
+            if not os.path.isdir(self.entry_root.get().strip()):
+                raise ValueError("Pasta raiz inválida")
+            if not os.path.isdir(self.entry_out.get().strip()):
+                raise ValueError("Pasta de saída inválida")
         except ValueError as e:
-            messagebox.showerror("Erro de Configuração", f"Parâmetro inválido: {e}")
+            messagebox.showerror("Erro de Configuração", str(e))
             return
 
         self.btn_run.config(state="disabled")
@@ -432,33 +334,6 @@ class RadiometricTab:
         file_format = self.format_var.get()
         dark_dir_override = self.entry_dark_dir.get().strip()
         white_dir_override = self.entry_white_dir.get().strip()
-        
-        # Obter threshold
-        try:
-            threshold_reflectance = float(self.threshold_var.get()) if self.threshold_var.get() else 0.0
-        except Exception as e:
-            self._log(f"[ERRO] Configuração inválida: {e}")
-            self.btn_run.config(state="normal")
-            self.btn_stop.config(state="disabled")
-            self.processing = False
-            return
-        
-        # Obter parâmetros de blur
-        aplicar_blur = self.aplicar_blur_var.get()
-        blur_params = None
-        if aplicar_blur:
-            try:
-                blur_params = {
-                    "tipo_blur": self.tipo_blur_var.get(),
-                    "tamanho_blur": int(self.tamanho_blur_var.get()),
-                    "sigma_blur": float(self.sigma_blur_var.get())
-                }
-            except ValueError as e:
-                self._log(f"[ERRO] Parâmetros de blur inválidos: {e}")
-                self.btn_run.config(state="normal")
-                self.btn_stop.config(state="disabled")
-                self.processing = False
-                return
             
         if not base_filename:
             base_filename = DEFAULT_FILENAME
@@ -477,10 +352,7 @@ class RadiometricTab:
         
         capture_dirs = _find_all_capture_dirs(root_dir)
         
-        self._log(f"[INFO] MODO: Correção Radiométrica" + (" COM BLUR" if aplicar_blur else ""))
-        if aplicar_blur:
-            self._log(f"[INFO] Blur: {blur_params['tipo_blur']} {blur_params['tamanho_blur']}x{blur_params['tamanho_blur']} (sigma: {blur_params['sigma_blur']})")
-        self._log(f"[INFO] Limiar de Reflectância: {threshold_reflectance}")
+        self._log(f"[INFO] MODO: Correção Radiométrica")
         self._log(f"[INFO] Encontradas {len(capture_dirs)} pastas 'capture'.")
 
         for cap in capture_dirs:
@@ -566,16 +438,6 @@ class RadiometricTab:
                     )
                     H, W, B = cube_corr.shape
                     
-                    # Aplicar blur se configurado
-                    if aplicar_blur and blur_params is not None:
-                        self._log(f"[BLUR] Aplicando blur na amostra {base_name}...")
-                        cube_corr = self._aplicar_blur_imagem(
-                            cube_corr, 
-                            blur_params["tipo_blur"], 
-                            blur_params["tamanho_blur"], 
-                            blur_params["sigma_blur"]
-                        )
-                    
                     # Processar amostra corrigida
                     row = self._processar_amostra_corrigida(
                         cube_corr=cube_corr,
@@ -583,8 +445,7 @@ class RadiometricTab:
                         dark_hdr=dark_hdr,
                         white_hdr=white_hdr,
                         base_name=base_name,
-                        out_dir=out_dir,
-                        threshold_reflectance=threshold_reflectance
+                        out_dir=out_dir
                     )
                     if row:
                         rows_excel.append(row)
