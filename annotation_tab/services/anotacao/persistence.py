@@ -11,7 +11,7 @@ import logging
 import numpy as np  # <-- ADICIONAR ESTA LINHA
 from typing import Optional, Callable, Dict, List, Tuple
 
-from ..models.class_manager import ClassManager
+from ...models.anotacao.class_manager import ClassManager
 
 logger = logging.getLogger("AnnotationTab.Persistence")
 

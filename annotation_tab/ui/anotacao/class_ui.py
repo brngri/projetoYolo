@@ -6,7 +6,7 @@ Componente UI para gerenciamento de classes.
 import tkinter as tk
 from tkinter import ttk, simpledialog
 from typing import Optional, Callable
-from ..models.class_manager import ClassManager
+from ...models.anotacao.class_manager import ClassManager
 
 
 class ClassUI:

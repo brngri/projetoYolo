@@ -14,7 +14,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.patches import Rectangle, Polygon
 from matplotlib.widgets import RectangleSelector
 
-from ..models.class_manager import ClassManager
+from ...models.anotacao.class_manager import ClassManager
 
 logger = logging.getLogger("AnnotationTab.Annotator")
 

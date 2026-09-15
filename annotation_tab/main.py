@@ -12,13 +12,13 @@ from typing import List, Optional
 import numpy as np  
 from PIL import Image
 
-from .models.class_manager import ClassManager
-from .services.persistence import AnnotationPersistence
-from .services.folder_loader import FolderLoader
-from .services.yolo_loader import YoloLoader
-from .ui.annotator import Annotator
-from .ui.class_ui import ClassUI
-from .ui.console import Console
+from .models.anotacao.class_manager import ClassManager
+from .services.anotacao.persistence import AnnotationPersistence
+from .services.anotacao.folder_loader import FolderLoader
+from .services.anotacao.yolo_loader import YoloLoader
+from .ui.anotacao.annotator import Annotator
+from .ui.anotacao.class_ui import ClassUI
+from .ui.anotacao.console import Console
 
 
 class AnnotationTab:

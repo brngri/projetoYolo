@@ -6,7 +6,7 @@ Carregamento de anotações a partir de arquivos YOLO.
 import os
 import logging
 from typing import Optional, Callable, Dict
-from ..models.class_manager import ClassManager
+from ...models.anotacao.class_manager import ClassManager
 from .persistence import YoloExporter
 
 logger = logging.getLogger("AnnotationTab.YoloLoader")
