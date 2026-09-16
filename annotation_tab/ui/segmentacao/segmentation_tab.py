@@ -1,11 +1,11 @@
-# ui/segmentation_tab.py
+# ui/segmentacao/segmentation_tab.py
 """
 Aba de Segmentação.
 
 - Formulário com TODOS os parâmetros do DEFAULT_CONFIG, agrupados em seções.
 - Parâmetros habilitados/desabilitados conforme o método escolhido.
 - Processamento em thread separada (não trava a UI).
-- Console + barra de progresso.
+- Console compacto + barra de progresso + carrossel de máscaras.
 """
 
 import os
@@ -23,6 +23,12 @@ import cv2
 import tkinter as tk
 from tkinter import ttk, filedialog
 
+try:
+    from PIL import Image, ImageTk
+    _HAS_PIL = True
+except ImportError:
+    _HAS_PIL = False
+
 # --- Imports a partir do pacote annotation_tab ---
 from ...models.segmentacao.config import DEFAULT_CONFIG
 from ...models.segmentacao.signatures import load_signatures_from_json
@@ -31,20 +37,19 @@ from ...services.segmentacao.classifiers import (
     classify_kmeans,
     classify_kmeans_guiado,
     classify_rf,
+    classify_otsu,
     prepare_training_data,
 )
 from ...services.segmentacao.postprocessing import postprocess_mask
 
-# Console está em annotation_tab/ui/anotacao/console.py → sobe 1 nível (..) e desce em anotacao
 from ..anotacao.console import Console
-
 
 
 logger = logging.getLogger("SegmentationTab")
 
 
 # =============================================================================
-# Handler que envia logs para a fila do console
+# Handler de logging que envia mensagens para a fila
 # =============================================================================
 class _QueueLogHandler(logging.Handler):
     def __init__(self, q: "queue.Queue[str]"):
@@ -59,7 +64,7 @@ class _QueueLogHandler(logging.Handler):
 
 
 # =============================================================================
-# Fábrica (mesmo padrão de create_annotation_tab)
+# Fábrica
 # =============================================================================
 def create_segmentation_tab(parent_frame: tk.Frame) -> "SegmentationTab":
     return SegmentationTab(parent_frame)
@@ -69,33 +74,39 @@ def create_segmentation_tab(parent_frame: tk.Frame) -> "SegmentationTab":
 # Classe principal
 # =============================================================================
 class SegmentationTab:
-    """Aba de segmentação com formulário de parâmetros + console + thread."""
+    """Aba de segmentação com formulário + console + carrossel."""
 
     def __init__(self, parent_frame: tk.Frame):
         self.parent = parent_frame
 
-        # Threading
+        # --- Threading ---
         self._stop_event = threading.Event()
         self._log_queue: "queue.Queue[str]" = queue.Queue()
         self._progress_queue: "queue.Queue" = queue.Queue()
+        self._mask_queue: "queue.Queue[str]" = queue.Queue()   # novos .png gerados
         self._worker_thread: Optional[threading.Thread] = None
         self._alive = True
 
-        # Captura logs dos services (que usam logging)
+        # --- Carrossel ---
+        self._masks_list: List[str] = []
+        self._current_mask_idx: int = 0
+        self._current_photo = None      # referência para evitar GC
+
+        # --- Handler de log ---
         self._handler = _QueueLogHandler(self._log_queue)
         self._handler.setFormatter(
             logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', '%H:%M:%S')
         )
         logging.getLogger().addHandler(self._handler)
 
-        # Variáveis
+        # --- Variáveis ---
         self._init_variables()
 
-        # UI
+        # --- UI ---
         self._build_ui()
         self._update_widget_states()
 
-        # Polling
+        # --- Polling ---
         self._poll_queues()
 
         self.console.log("Aba de segmentação pronta.")
@@ -133,6 +144,14 @@ class SegmentationTab:
         self.var_rf_prob_threshold = tk.DoubleVar(value=C.get("rf_prob_threshold", 0.5))
         self.var_n_background_samples = tk.IntVar(value=C.get("n_background_samples", 5000))
 
+        # Otsu
+        ot = C["otsu_params"]
+        self.var_otsu_use_ndvi = tk.BooleanVar(value=ot.get("use_ndvi", False))
+        self.var_otsu_band_nm = tk.DoubleVar(value=ot.get("band_nm", 800.0))
+        self.var_otsu_red_nm = tk.DoubleVar(value=ot.get("red_nm", 670.0))
+        self.var_otsu_nir_nm = tk.DoubleVar(value=ot.get("nir_nm", 800.0))
+        self.var_otsu_invert = tk.BooleanVar(value=ot.get("invert", False))
+
         # Pré-processamento
         self.var_apply_blur = tk.BooleanVar(value=C["apply_blur"])
         self.var_blur_kind = tk.StringVar(value=C["blur_kind"])
@@ -169,10 +188,15 @@ class SegmentationTab:
         # Status
         self.var_status = tk.StringVar(value="Pronto.")
         self.var_progress = tk.DoubleVar(value=0.0)
+        self.var_current_file = tk.StringVar(value="—")
+        self.var_mask_counter = tk.StringVar(value="0 / 0")
 
         # Listas de widgets para enable/disable dinâmico
         self._km_widgets: List[tk.Widget] = []
         self._rf_widgets: List[tk.Widget] = []
+        self._otsu_widgets: List[tk.Widget] = []
+        self._otsu_ndvi_widgets: List[tk.Widget] = []
+        self._otsu_band_widgets: List[tk.Widget] = []
         self._sig_widgets: List[tk.Widget] = []
         self._bg_widgets: List[tk.Widget] = []
         self._band_pca_widgets: List[tk.Widget] = []
@@ -197,7 +221,7 @@ class SegmentationTab:
 
         params_inner = self._make_scrollable(left)
         self._build_params_panel(params_inner)
-        self._build_console_panel(right)
+        self._build_right_panel(right)
 
     def _make_scrollable(self, parent: tk.Widget) -> ttk.Frame:
         canvas = tk.Canvas(parent, borderwidth=0, highlightthickness=0)
@@ -226,6 +250,7 @@ class SegmentationTab:
         self._build_signatures_section(parent, r); r += 1
         self._build_kmeans_section(parent, r); r += 1
         self._build_rf_section(parent, r); r += 1
+        self._build_otsu_section(parent, r); r += 1
         self._build_preproc_section(parent, r); r += 1
         self._build_postproc_section(parent, r); r += 1
         self._build_save_section(parent, r)
@@ -246,8 +271,8 @@ class SegmentationTab:
         parent.columnconfigure(1, weight=1)
         return cb
 
-    def _check(self, parent, row, label, var):
-        cb = ttk.Checkbutton(parent, text=label, variable=var)
+    def _check(self, parent, row, label, var, command=None):
+        cb = ttk.Checkbutton(parent, text=label, variable=var, command=command)
         cb.grid(row=row, column=0, columnspan=2, sticky="w", padx=4, pady=1)
         return cb
 
@@ -275,6 +300,7 @@ class SegmentationTab:
             ("kmeans", "KMeans (não supervisionado)"),
             ("kmeans_guiado", "KMeans Guiado (semi-supervisionado)"),
             ("rf", "Random Forest (supervisionado)"),
+            ("otsu", "Otsu (threshold adaptativo)"),
         ]):
             ttk.Radiobutton(
                 lf, text=txt, value=val, variable=self.var_method,
@@ -286,7 +312,7 @@ class SegmentationTab:
         lf.grid(row=row, column=0, sticky="ew", padx=4, pady=4)
         lf.columnconfigure(0, weight=1)
 
-        ttk.Label(lf, text="Assinaturas de folha (target):").grid(
+        ttk.Label(lf, text="Assinaturas classe alvo:").grid(
             row=0, column=0, sticky="w", padx=4, pady=(4, 0))
         self.lb_json = tk.Listbox(lf, height=3, selectmode=tk.EXTENDED)
         self.lb_json.grid(row=1, column=0, sticky="ew", padx=4, pady=2)
@@ -348,19 +374,51 @@ class SegmentationTab:
         self._rf_widgets.append(self._grid_entry(lf, 6, "prob_threshold", self.var_rf_prob_threshold))
         self._rf_widgets.append(self._grid_entry(lf, 7, "n_background_samples", self.var_n_background_samples))
 
+    def _build_otsu_section(self, parent, row):
+        lf = ttk.LabelFrame(parent, text="Parâmetros — Otsu")
+        lf.grid(row=row, column=0, sticky="ew", padx=4, pady=4)
+        lf.columnconfigure(1, weight=1)
+
+        cb_ndvi = self._check(lf, 0, "Usar NDVI (nir-red)/(nir+red)",
+                              self.var_otsu_use_ndvi,
+                              command=self._update_widget_states)
+        self._otsu_widgets.append(cb_ndvi)
+
+        # Campos usados quando use_ndvi=False
+        w = self._grid_entry(lf, 1, "band_nm (banda p/ Otsu)", self.var_otsu_band_nm)
+        self._otsu_widgets.append(w)
+        self._otsu_band_widgets.append(w)
+
+        # Campos usados quando use_ndvi=True
+        w = self._grid_entry(lf, 2, "red_nm", self.var_otsu_red_nm)
+        self._otsu_widgets.append(w)
+        self._otsu_ndvi_widgets.append(w)
+
+        w = self._grid_entry(lf, 3, "nir_nm", self.var_otsu_nir_nm)
+        self._otsu_widgets.append(w)
+        self._otsu_ndvi_widgets.append(w)
+
+        cb_inv = self._check(lf, 4, "Inverter máscara", self.var_otsu_invert)
+        self._otsu_widgets.append(cb_inv)
+
     def _build_preproc_section(self, parent, row):
         lf = ttk.LabelFrame(parent, text="Pré-processamento")
         lf.grid(row=row, column=0, sticky="ew", padx=4, pady=4)
         lf.columnconfigure(1, weight=1)
 
-        cb_blur = self._check(lf, 0, "Aplicar blur", self.var_apply_blur)
+        # Blur — comando para atualizar estado dos sub-campos ao alternar
+        cb_blur = self._check(lf, 0, "Aplicar blur",
+                              self.var_apply_blur,
+                              command=self._update_widget_states)
         self._blur_widgets.append(cb_blur)
         self._blur_widgets.append(self._grid_combo(
             lf, 1, "blur_kind", self.var_blur_kind,
             values=["gaussian", "median", "box"]))
         self._blur_widgets.append(self._grid_entry(lf, 2, "blur_ksize", self.var_blur_ksize))
 
-        cb_sg = self._check(lf, 3, "Aplicar Savitzky-Golay", self.var_apply_savgol)
+        cb_sg = self._check(lf, 3, "Aplicar Savitzky-Golay",
+                            self.var_apply_savgol,
+                            command=self._update_widget_states)
         self._savgol_widgets.append(cb_sg)
         self._savgol_widgets.append(self._grid_entry(lf, 4, "savgol_window", self.var_savgol_window))
         self._savgol_widgets.append(self._grid_entry(lf, 5, "savgol_polyorder", self.var_savgol_polyorder))
@@ -381,18 +439,24 @@ class SegmentationTab:
         lf.grid(row=row, column=0, sticky="ew", padx=4, pady=4)
         lf.columnconfigure(1, weight=1)
 
-        cb_maj = self._check(lf, 0, "Filtro de maioria", self.var_pp_majority)
+        cb_maj = self._check(lf, 0, "Filtro de maioria",
+                             self.var_pp_majority,
+                             command=self._update_widget_states)
         self._pp_majority_widgets.append(cb_maj)
         self._pp_majority_widgets.append(self._grid_entry(lf, 1, "majority_size", self.var_pp_majority_size))
 
-        cb_morph = self._check(lf, 2, "Fechamento morfológico", self.var_pp_morph)
+        cb_morph = self._check(lf, 2, "Fechamento morfológico",
+                               self.var_pp_morph,
+                               command=self._update_widget_states)
         self._pp_morph_widgets.append(cb_morph)
         self._pp_morph_widgets.append(self._grid_entry(lf, 3, "closing_kernel", self.var_pp_closing_kernel))
 
         self._check(lf, 4, "Preencher buracos", self.var_pp_fill_holes)
         self._grid_entry(lf, 5, "min_area (px)", self.var_pp_min_area)
 
-        cb_circ = self._check(lf, 6, "Filtro de circularidade", self.var_pp_circ_filter)
+        cb_circ = self._check(lf, 6, "Filtro de circularidade",
+                              self.var_pp_circ_filter,
+                              command=self._update_widget_states)
         self._pp_circ_widgets.append(cb_circ)
         self._pp_circ_widgets.append(self._grid_entry(lf, 7, "circularity_threshold", self.var_pp_circ_thresh))
 
@@ -404,9 +468,15 @@ class SegmentationTab:
         self._check(lf, 1, "Salvar máscara (.png) e metadados (.json)", self.var_save_crops)
         self._check(lf, 2, "Sobrescrever resultados existentes", self.var_overwrite)
 
-    def _build_console_panel(self, parent: ttk.Frame) -> None:
+    # ---- Painel direito (progresso + preview + console) --------------------
+    def _build_right_panel(self, parent: ttk.Frame) -> None:
+        # ---------- Progresso ----------
         prog_frame = ttk.LabelFrame(parent, text="Progresso")
         prog_frame.pack(fill=tk.X, padx=4, pady=(4, 2))
+
+        ttk.Label(prog_frame, text="Arquivo atual:").pack(anchor="w", padx=6, pady=(6, 0))
+        ttk.Label(prog_frame, textvariable=self.var_current_file,
+                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=6)
 
         self.progressbar = ttk.Progressbar(
             prog_frame, orient="horizontal", mode="determinate",
@@ -414,6 +484,7 @@ class SegmentationTab:
         self.progressbar.pack(fill=tk.X, padx=6, pady=6)
         ttk.Label(prog_frame, textvariable=self.var_status).pack(anchor="w", padx=6, pady=(0, 6))
 
+        # ---------- Botões ----------
         btn_frame = ttk.Frame(parent)
         btn_frame.pack(fill=tk.X, padx=4, pady=2)
         self.btn_process = ttk.Button(btn_frame, text="▶ Processar", command=self._on_process)
@@ -421,9 +492,36 @@ class SegmentationTab:
         self.btn_stop = ttk.Button(btn_frame, text="■ Parar", command=self._on_stop, state="disabled")
         self.btn_stop.pack(side=tk.LEFT, padx=2)
 
+        # ---------- Preview (carrossel) ----------
+        preview_frame = ttk.LabelFrame(parent, text="Máscaras Geradas")
+        preview_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=(2, 2))
+
+        self.lbl_preview = ttk.Label(
+            preview_frame, text="Nenhuma máscara ainda.",
+            anchor="center", background="#1e1e1e", foreground="lightgray")
+        self.lbl_preview.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+
+        nav_frame = ttk.Frame(preview_frame)
+        nav_frame.pack(fill=tk.X, padx=6, pady=(0, 6))
+        self.btn_prev = ttk.Button(nav_frame, text="◀ Anterior",
+                                   command=self._prev_mask, state="disabled")
+        self.btn_prev.pack(side=tk.LEFT, padx=2)
+        self.btn_next = ttk.Button(nav_frame, text="Próxima ▶",
+                                   command=self._next_mask, state="disabled")
+        self.btn_next.pack(side=tk.LEFT, padx=2)
+        ttk.Label(nav_frame, textvariable=self.var_mask_counter).pack(side=tk.RIGHT, padx=6)
+
+        # ---------- Console (compacto) ----------
         console_frame = ttk.LabelFrame(parent, text="Console")
-        console_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=(2, 4))
-        self.console = Console(console_frame, height=20)
+        console_frame.pack(fill=tk.X, padx=4, pady=(2, 4))
+        self.console = Console(console_frame, height=6)
+
+        # Guarda referência ao frame pra podermos redimensionar a imagem
+        self._preview_frame = preview_frame
+
+        if not _HAS_PIL:
+            self.console.log("⚠️ Pillow não instalado — preview desabilitado. "
+                             "Rode: pip install Pillow")
 
     # =========================================================================
     # File pickers
@@ -491,6 +589,7 @@ class SegmentationTab:
     def _update_widget_states(self):
         method = self.var_method.get()
 
+        # KMeans
         km_on = method in ("kmeans", "kmeans_guiado")
         self._set_state(self._km_widgets, km_on)
         if km_on and len(self._km_widgets) > 1:
@@ -499,26 +598,40 @@ class SegmentationTab:
             except Exception:
                 pass
 
+        # RF
         rf_on = method == "rf"
         self._set_state(self._rf_widgets, rf_on)
 
+        # Otsu
+        otsu_on = method == "otsu"
+        self._set_state(self._otsu_widgets, otsu_on)
+        if otsu_on:
+            use_ndvi = self.var_otsu_use_ndvi.get()
+            self._set_state(self._otsu_ndvi_widgets, use_ndvi)
+            self._set_state(self._otsu_band_widgets, not use_ndvi)
+
+        # Assinaturas
         sig_on = method in ("kmeans_guiado", "rf")
         self._set_state(self._sig_widgets, sig_on)
         bg_on = method == "rf"
         self._set_state(self._bg_widgets, bg_on)
 
+        # Blur — sempre habilitado, mas sub-campos só quando checkbox ligado
         self._set_state(self._blur_widgets, True)
         if not self.var_apply_blur.get():
             self._set_state(self._blur_widgets[1:], False)
 
+        # Savgol — idem
         self._set_state(self._savgol_widgets, True)
         if not self.var_apply_savgol.get():
             self._set_state(self._savgol_widgets[1:], False)
 
+        # Band selection
         bs = self.var_band_selection.get()
         self._set_state(self._band_pca_widgets, bs == "pca")
         self._set_state(self._band_kbest_widgets, bs == "kbest")
 
+        # Pós-processamento
         self._set_state(self._pp_majority_widgets, True)
         if not self.var_pp_majority.get():
             self._set_state(self._pp_majority_widgets[1:], False)
@@ -566,6 +679,14 @@ class SegmentationTab:
         }
         config["rf_prob_threshold"] = self.var_rf_prob_threshold.get()
         config["n_background_samples"] = self.var_n_background_samples.get()
+
+        config["otsu_params"] = {
+            "use_ndvi": self.var_otsu_use_ndvi.get(),
+            "band_nm": self.var_otsu_band_nm.get(),
+            "red_nm": self.var_otsu_red_nm.get(),
+            "nir_nm": self.var_otsu_nir_nm.get(),
+            "invert": self.var_otsu_invert.get(),
+        }
 
         config["apply_blur"] = self.var_apply_blur.get()
         config["blur_kind"] = self.var_blur_kind.get()
@@ -630,12 +751,22 @@ class SegmentationTab:
 
         os.makedirs(config["out_root"], exist_ok=True)
 
+        # Limpa carrossel para esta nova execução
+        self._masks_list.clear()
+        self._current_mask_idx = 0
+        self.var_mask_counter.set("0 / 0")
+        self.lbl_preview.configure(image="", text="Aguardando primeira máscara...")
+        self._current_photo = None
+        self.btn_prev.configure(state="disabled")
+        self.btn_next.configure(state="disabled")
+
         self._stop_event.clear()
         self.var_progress.set(0.0)
         self.var_status.set("Iniciando...")
+        self.var_current_file.set("—")
         self._set_running(True)
 
-        self.console.log(f"▶ Iniciando processamento: {len(npys)} imagens | método={config['method']}")
+        self.console.log(f"▶ Iniciando: {len(npys)} imagens | método={config['method']}")
 
         self._worker_thread = threading.Thread(
             target=self._worker,
@@ -657,6 +788,7 @@ class SegmentationTab:
             self.btn_process.configure(state="normal")
             self.btn_stop.configure(state="disabled")
 
+    # ---- Worker (thread separada) ------------------------------------------
     def _worker(self, config: dict, npys: List[str]):
         try:
             signatures = None
@@ -686,14 +818,16 @@ class SegmentationTab:
                     self._log_queue.put("⏹️ Processamento interrompido pelo usuário.")
                     break
 
-                self._progress_queue.put(("status", f"({i}/{total}) {os.path.basename(npy)}"))
+                fname = os.path.basename(npy)
+                self._progress_queue.put(("status", f"({i}/{total}) {fname}"))
+                self._progress_queue.put(("file", fname))
                 self._progress_queue.put(("progress", 100.0 * (i - 1) / total))
 
                 try:
                     self._process_one_image(npy, signatures, signatures_bg, config)
                 except Exception as e:
-                    logger.exception(f"Erro em {os.path.basename(npy)}: {e}")
-                    self._log_queue.put(f"❌ Erro em {os.path.basename(npy)}: {e}")
+                    logger.exception(f"Erro em {fname}: {e}")
+                    self._log_queue.put(f"❌ Erro em {fname}: {e}")
 
                 self._progress_queue.put(("progress", 100.0 * i / total))
 
@@ -709,15 +843,20 @@ class SegmentationTab:
         finally:
             self._progress_queue.put(("done", None))
 
+    # ---- Pipeline de uma imagem --------------------------------------------
     def _process_one_image(self, npy_path, signatures, signatures_bg, config):
         base = os.path.splitext(os.path.basename(npy_path))[0]
         safe_base = re.sub(r"[^A-Za-z0-9_.-]+", "_", base.replace(":", ""))
 
         out_root = config["out_root"]
         npy_out = os.path.join(out_root, f"{safe_base}_segmentado.npy")
+        mask_png = os.path.join(out_root, f"{safe_base}_mascara.png")
 
         if not config.get("overwrite", False) and os.path.exists(npy_out):
             logger.info(f"Já existe, pulando: {os.path.basename(npy_path)}")
+            # Mesmo pulando, adiciona ao carrossel se a máscara existir
+            if os.path.exists(mask_png):
+                self._mask_queue.put(mask_png)
             return
 
         cube = np.load(npy_path).astype(np.float32)
@@ -728,6 +867,7 @@ class SegmentationTab:
         h, w, b = cube.shape
         logger.info(f"Processando {os.path.basename(npy_path)} -> {h}x{w}x{b}")
 
+        # --- Pré-processamento ---
         proc = cube.copy()
         if config.get("apply_blur", False):
             proc = apply_blur(proc, config.get("blur_kind", "gaussian"),
@@ -736,12 +876,14 @@ class SegmentationTab:
             proc = apply_savgol(proc, config.get("savgol_window", 11),
                                 config.get("savgol_polyorder", 2))
 
+        # --- Seleção de bandas ---
         band_selector = None
         if config.get("band_selection") is not None:
             proc, band_selector = select_bands(
                 proc, signatures, config["band_selection"],
                 config.get("band_selection_params", {}))
 
+        # --- Classificação ---
         method = config["method"]
         if method == "kmeans":
             mask = classify_kmeans(
@@ -768,16 +910,24 @@ class SegmentationTab:
                 rf_params=config["rf_params"],
                 prob_threshold=config.get("rf_prob_threshold", 0.5),
                 use_scaler=config.get("use_scaler", True))
+        elif method == "otsu":
+            mask = classify_otsu(
+                proc,
+                otsu_params=config.get("otsu_params", {}),
+                cube_start_nm=config.get("cube_start_nm", 400.0),
+                cube_end_nm=config.get("cube_end_nm", 1000.0))
         else:
             raise ValueError(f"Método desconhecido: {method}")
 
+        # --- Pós-processamento ---
         mask = postprocess_mask(mask, config)
 
+        # --- Salvamento ---
         if not config.get("save_crops", True):
             return
 
-        mask_png = os.path.join(out_root, f"{safe_base}_mascara.png")
         cv2.imwrite(mask_png, (mask * 255).astype(np.uint8))
+        self._mask_queue.put(mask_png)   # <-- alimenta o carrossel
 
         if config.get("save_masked_cube", True):
             masked_cube = cube.copy()
@@ -795,6 +945,7 @@ class SegmentationTab:
                 "method": config.get("method"),
                 "kmeans_params": config.get("kmeans_params"),
                 "rf_params": config.get("rf_params"),
+                "otsu_params": config.get("otsu_params"),
                 "rf_prob_threshold": config.get("rf_prob_threshold"),
                 "band_selection": config.get("band_selection"),
                 "use_scaler": config.get("use_scaler"),
@@ -807,12 +958,76 @@ class SegmentationTab:
         logger.info(f"Finalizado: {base} ({mask.sum()} pixels)")
 
     # =========================================================================
+    # Carrossel
+    # =========================================================================
+    def _prev_mask(self):
+        if self._current_mask_idx > 0:
+            self._current_mask_idx -= 1
+            self._show_current_mask()
+
+    def _next_mask(self):
+        if self._current_mask_idx < len(self._masks_list) - 1:
+            self._current_mask_idx += 1
+            self._show_current_mask()
+
+    def _show_current_mask(self):
+        if not self._masks_list:
+            self.lbl_preview.configure(image="", text="Nenhuma máscara ainda.")
+            self.var_mask_counter.set("0 / 0")
+            self.btn_prev.configure(state="disabled")
+            self.btn_next.configure(state="disabled")
+            return
+
+        path = self._masks_list[self._current_mask_idx]
+        self.var_mask_counter.set(f"{self._current_mask_idx + 1} / {len(self._masks_list)}")
+
+        self.btn_prev.configure(state=("normal" if self._current_mask_idx > 0 else "disabled"))
+        self.btn_next.configure(state=("normal"
+                                       if self._current_mask_idx < len(self._masks_list) - 1
+                                       else "disabled"))
+
+        if not _HAS_PIL:
+            self.lbl_preview.configure(text=os.path.basename(path))
+            return
+
+        try:
+            img = Image.open(path)
+
+            # Ajusta tamanho disponível
+            self._preview_frame.update_idletasks()
+            avail_w = max(self._preview_frame.winfo_width() - 30, 200)
+            avail_h = max(self._preview_frame.winfo_height() - 80, 150)
+
+            img.thumbnail((avail_w, avail_h), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+
+            self._current_photo = photo  # evita GC
+            self.lbl_preview.configure(image=photo, text="")
+        except Exception as e:
+            self.lbl_preview.configure(image="", text=f"Erro ao abrir: {e}")
+            self._current_photo = None
+
+    def _on_new_mask(self, path: str):
+        """Chamado na thread principal quando uma nova máscara é gerada."""
+        was_at_end = (self._current_mask_idx >= len(self._masks_list) - 1)
+        self._masks_list.append(path)
+        if was_at_end:
+            self._current_mask_idx = len(self._masks_list) - 1
+            self._show_current_mask()
+        else:
+            # Só atualiza o contador
+            self.var_mask_counter.set(
+                f"{self._current_mask_idx + 1} / {len(self._masks_list)}")
+            self.btn_next.configure(state="normal")
+
+    # =========================================================================
     # Polling
     # =========================================================================
     def _poll_queues(self):
         if not self._alive:
             return
 
+        # Logs
         try:
             while True:
                 msg = self._log_queue.get_nowait()
@@ -820,6 +1035,7 @@ class SegmentationTab:
         except queue.Empty:
             pass
 
+        # Progresso / status / arquivo atual
         try:
             while True:
                 kind, value = self._progress_queue.get_nowait()
@@ -827,8 +1043,18 @@ class SegmentationTab:
                     self.var_progress.set(value)
                 elif kind == "status":
                     self.var_status.set(value)
+                elif kind == "file":
+                    self.var_current_file.set(value)
                 elif kind == "done":
                     self._set_running(False)
+        except queue.Empty:
+            pass
+
+        # Novas máscaras para o carrossel
+        try:
+            while True:
+                path = self._mask_queue.get_nowait()
+                self._on_new_mask(path)
         except queue.Empty:
             pass
 

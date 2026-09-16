@@ -12,48 +12,28 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     # Diretórios
-    "root_dir": r"D:\dadosBruno_2\projetoDidion\corrRad\segmentacaoRF\teste",
-    "out_root": r"D:\dadosBruno_2\projetoDidion\corrRad\segmentacaoRF\kmeans_guiado",
-    "json_path": [
-        r"D:\dadosBruno_2\projetoDidion\corrRad\espectro_editor\grao\Corn_29-28_2026-08-26_13-54-52_corrigido_polygons_20260910_095041.json",
-        r"D:\dadosBruno_2\projetoDidion\corrRad\espectro_editor\grao\Corn_31-30_2026-08-25_18-15-47_corrigido_polygons_20260910_093921.json",
-        r"D:\dadosBruno_2\projetoDidion\corrRad\espectro_editor\grao\Corn_75-74_2026-08-25_16-31-42_corrigido_polygons_20260910_094358.json",
-        r"D:\dadosBruno_2\projetoDidion\corrRad\espectro_editor\grao\Corn_33-32_2026-08-25_18-11-35_corrigido_polygons_20260910_115544.json"
-    ],
-    "json_path_background": [
-        r"D:\dadosBruno_2\projetoDidion\corrRad\espectro_editor\background\Corn_53-52_2026-08-25_17-10-44_corrigido_polygons_20260910_101529.json",
-        r"D:\dadosBruno_2\projetoDidion\corrRad\espectro_editor\background\Corn_89-88_2026-08-25_16-09-04_corrigido_polygons_20260910_101613.json",
-        r"D:\dadosBruno_2\projetoDidion\corrRad\espectro_editor\papel\Corn_9-8_2026-08-26_14-27-27_corrigido_polygons_20260910_101829.json",
-        r"D:\dadosBruno_2\projetoDidion\corrRad\espectro_editor\papel\Corn_55-54_2026-08-25_17-07-09_corrigido_polygons_20260910_101732.json",
-        r"D:\dadosBruno_2\projetoDidion\corrRad\espectro_editor\plastico\Corn_98-100_2026-08-25_15-58-53_corrigido_polygons_20260910_101952.json",
-        r"D:\dadosBruno_2\projetoDidion\corrRad\espectro_editor\plastico\SampleCupEmpty_2026-08-25_15-28-54_corrigido_polygons_20260910_102105.json",
-        r"D:\dadosBruno_2\projetoDidion\corrRad\espectro_editor\plastico\Corn_23-22_2026-08-26_14-05-43_corrigido_polygons_20260910_111114.json", #:P
-        r"D:\dadosBruno_2\projetoDidion\corrRad\espectro_editor\plastico\Corn_91-90_2026-08-25_15-54-46_corrigido_polygons_20260910_114715.json",
-        r"D:\dadosBruno_2\projetoDidion\corrRad\espectro_editor\plastico\Corn_27-26_2026-08-26_13-58-49_corrigido_polygons_20260910_115246.json",
-        r"D:\dadosBruno_2\projetoDidion\corrRad\espectro_editor\plastico\Corn_49-48_2026-08-25_17-28-07_corrigido_polygons_20260910_144008.json",
-        r"D:\dadosBruno_2\projetoDidion\corrRad\espectro_editor\papel\Corn_49-48_2026-08-25_17-28-48_corrigido_polygons_20260910_143136.json"
-    ],
+    "root_dir": r"",
+    "out_root": r"",
+    "json_path": [],
+    "json_path_background": [],
 
-    # Método: "kmeans", "kmeans_guiado", "rf"
-    "method": "kmeans_guiado",
+    # Método: "kmeans", "kmeans_guiado", "rf", "otsu"
+    "method": "kmeans",
 
     # -------------------------------------------------------------------------
     # KMeans
     # -------------------------------------------------------------------------
-    # ATENÇÃO: "pca_components" é usado SOMENTE pelos classificadores KMeans
-    # (é removido antes de passar o dict para o sklearn.cluster.KMeans).
-    # - None  -> desativa PCA
-    # - int N -> aplica PCA e reduz para N componentes antes do KMeans
-    # -------------------------------------------------------------------------
     "kmeans_params": {
         "n_clusters": 2,
-        "n_init": 10,               # ignorado em kmeans_guiado (usa n_init=1)
+        "n_init": 10,
         "max_iter": 300,
         "random_state": 42,
-        "pca_components": 10,       # <-- AJUSTE AQUI o N de componentes
+        "pca_components": 20,       # None desativa PCA
     },
 
+    # -------------------------------------------------------------------------
     # Random Forest
+    # -------------------------------------------------------------------------
     "rf_params": {
         "n_estimators": 300,
         "max_depth": 15,
@@ -65,6 +45,22 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "rf_prob_threshold": 0.5,
     "n_background_samples": 5000,
 
+    # -------------------------------------------------------------------------
+    # Otsu
+    # -------------------------------------------------------------------------
+    # Otsu é aplicado em uma banda única OU em um índice (NDVI).
+    # Os comprimentos de onda são convertidos em índice de banda usando
+    # `cube_start_nm` / `cube_end_nm` e o número de bandas do cubo.
+    "otsu_params": {
+        "use_ndvi": False,   # se True, calcula NDVI antes do Otsu
+        "band_nm": 800.0,    # banda única (usada quando use_ndvi=False)
+        "red_nm": 670.0,     # usado se use_ndvi=True
+        "nir_nm": 800.0,     # usado se use_ndvi=True
+        "invert": False,     # inverte a máscara resultante
+    },
+    "cube_start_nm": 400.0,
+    "cube_end_nm": 1000.0,
+
     # Pré-processamento
     "apply_blur": False,
     "blur_kind": "gaussian",
@@ -74,7 +70,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "savgol_window": 11,
     "savgol_polyorder": 2,
 
-    "band_selection": None,     # None, "pca", "kbest"
+    "band_selection": None,
     "band_selection_params": {
         "pca_components": 20,
         "pca_variance_retained": 0.99,

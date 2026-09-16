@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Classificadores: KMeans, KMeans Guiado, Random Forest."""
+"""Classificadores: KMeans, KMeans Guiado, Random Forest, Otsu."""
 
 import logging
 from typing import Optional, Tuple
 
 import numpy as np
+import cv2
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
@@ -14,30 +15,36 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# KMeans (não supervisionado)
+# Util
+# =============================================================================
+def _nm_to_index(nm: float, n_bands: int,
+                 start_nm: float = 400.0, end_nm: float = 1000.0) -> int:
+    """Converte comprimento de onda (nm) em índice de banda, assumindo
+    espaçamento linear entre start_nm e end_nm."""
+    if n_bands <= 1:
+        return 0
+    step = (end_nm - start_nm) / (n_bands - 1)
+    if abs(step) < 1e-12:
+        return 0
+    idx = int(round((nm - start_nm) / step))
+    return max(0, min(idx, n_bands - 1))
+
+
+# =============================================================================
+# KMeans (não supervisionado) — com PCA opcional
 # =============================================================================
 def classify_kmeans(
     cube: np.ndarray,
     n_clusters: int = 2,
     kmeans_params: Optional[dict] = None,
 ) -> np.ndarray:
-    """
-    KMeans puro (não supervisionado) com PCA opcional.
-
-    - Se `kmeans_params['pca_components']` for um inteiro N > 0 e < n_bandas,
-      aplica PCA reduzindo o cubo para N componentes ANTES do KMeans.
-      Isso reduz drasticamente o uso de memória (224 -> N).
-    - O cluster escolhido como "folha" é aquele cujo centroide está MAIS
-      DISTANTE da média global (heurística: folha = cluster mais extremo).
-    """
     h, w, b = cube.shape
     X = cube.reshape(-1, b).astype(np.float32)
 
     params = dict(kmeans_params or {})
     n_clusters = params.pop("n_clusters", n_clusters)
-    pca_n = params.pop("pca_components", None)   # <-- removido antes do KMeans
+    pca_n = params.pop("pca_components", None)
 
-    # ---------- PCA opcional ----------
     if pca_n is not None and 0 < pca_n < b:
         pca = PCA(n_components=pca_n, random_state=params.get("random_state", 42))
         X = pca.fit_transform(X)
@@ -57,41 +64,28 @@ def classify_kmeans(
 
 
 # =============================================================================
-# KMeans Guiado (semi-supervisionado)
+# KMeans Guiado
 # =============================================================================
 def classify_kmeans_guiado(
     cube: np.ndarray,
     signatures: np.ndarray,
     kmeans_params: Optional[dict] = None,
 ) -> np.ndarray:
-    """
-    KMeans guiado: 1 centroide = média das assinaturas de folha;
-    demais centroides = pixels aleatórios.
-
-    Correções aplicadas:
-    - `n_init` é removido do dict antes de passar para o KMeans
-      (evita "multiple values for keyword argument 'n_init'").
-    - Se `pca_components` estiver definido, aplica PCA no cubo E nas
-      assinaturas (mesmo espaço), para que os centroides façam sentido.
-    """
     h, w, b = cube.shape
     X = cube.reshape(-1, b).astype(np.float32)
     sig = signatures.astype(np.float32)
 
     params = dict(kmeans_params or {})
     n_clusters = params.pop("n_clusters", 2)
-    pca_n = params.pop("pca_components", None)   # <-- removido antes do KMeans
-    params.pop("n_init", None)                   # <-- CORREÇÃO: evita conflito
+    pca_n = params.pop("pca_components", None)
+    params.pop("n_init", None)  # evita conflito
     random_state = params.get("random_state", 42)
 
-    # ---------- PCA opcional (no cubo e nas assinaturas) ----------
     if pca_n is not None and 0 < pca_n < b:
         pca = PCA(n_components=pca_n, random_state=random_state)
         X = pca.fit_transform(X)
         sig = pca.transform(sig)
         logger.info(f"PCA no KMeans guiado: {b} -> {pca_n} componentes")
-    else:
-        logger.info(f"KMeans guiado: usando todas as {b} bandas (PCA desativado)")
 
     mean_sig = np.mean(sig, axis=0)
 
@@ -106,8 +100,8 @@ def classify_kmeans_guiado(
     km = KMeans(
         n_clusters=n_clusters,
         init=init_centers,
-        n_init=1,                 # determinístico (init já fornecido)
-        **params,                 # <-- agora sem 'n_init' nem 'pca_components'
+        n_init=1,
+        **params,
     )
     labels = km.fit_predict(X).reshape(h, w)
 
@@ -119,7 +113,7 @@ def classify_kmeans_guiado(
 
 
 # =============================================================================
-# Preparação de dados de treino (RF)
+# Preparação de treino (RF)
 # =============================================================================
 def prepare_training_data(
     cube: np.ndarray,
@@ -129,23 +123,13 @@ def prepare_training_data(
     band_selector=None,
     random_state: int = 42,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Monta X_train / y_train para o RF.
-
-    Classe 1 (folha): assinaturas fornecidas.
-    Classe 0 (fundo):
-        - se signatures_background fornecido -> usa (preferencial)
-        - senão -> amostragem aleatória do cubo (fallback, menos confiável)
-    """
     rng = np.random.RandomState(random_state)
 
-    # Classe 1: folha
     X_target = signatures_target.copy()
     if band_selector is not None:
         X_target = band_selector.transform(X_target)
     y_target = np.ones(len(X_target), dtype=int)
 
-    # Classe 0: fundo
     if signatures_background is not None and len(signatures_background) > 0:
         X_bg = signatures_background.copy()
         if band_selector is not None:
@@ -164,8 +148,7 @@ def prepare_training_data(
             X_bg = band_selector.transform(X_bg)
         logger.warning(
             f"RF: nenhuma assinatura de background fornecida. "
-            f"Usando {n_bg} pixels aleatórios (pode conter folha)."
-        )
+            f"Usando {n_bg} pixels aleatórios (pode conter folha).")
 
     y_bg = np.zeros(len(X_bg), dtype=int)
 
@@ -186,7 +169,6 @@ def classify_rf(
     prob_threshold: float = 0.5,
     use_scaler: bool = True,
 ) -> np.ndarray:
-    """Random Forest com threshold de probabilidade."""
     h, w, b = cube.shape
     X_all = cube.reshape(-1, b).astype(np.float32)
 
@@ -204,4 +186,67 @@ def classify_rf(
     prob_target = probs[:, 1] if probs.shape[1] == 2 else probs[:, 0]
     mask = (prob_target >= prob_threshold).astype(np.uint8).reshape(h, w)
     logger.info(f"RF: {mask.sum()} pixels classificados como folha")
+    return mask
+
+
+# =============================================================================
+# Otsu
+# =============================================================================
+def classify_otsu(
+    cube: np.ndarray,
+    otsu_params: Optional[dict] = None,
+    cube_start_nm: float = 400.0,
+    cube_end_nm: float = 1000.0,
+) -> np.ndarray:
+    """
+    Segmentação via Otsu.
+
+    - `use_ndvi=True`  -> calcula NDVI (nir-red)/(nir+red) e aplica Otsu.
+    - `use_ndvi=False` -> usa a banda `band_nm` e aplica Otsu.
+    - `invert=True`    -> inverte a máscara resultante.
+
+    A conversão nm -> índice de banda é feita com `cube_start_nm`/`cube_end_nm`
+    e o número de bandas do cubo.
+    """
+    h, w, b = cube.shape
+    params = dict(otsu_params or {})
+    use_ndvi = params.get("use_ndvi", False)
+    invert = params.get("invert", False)
+
+    if use_ndvi:
+        red_nm = float(params.get("red_nm", 670.0))
+        nir_nm = float(params.get("nir_nm", 800.0))
+        red_idx = _nm_to_index(red_nm, b, cube_start_nm, cube_end_nm)
+        nir_idx = _nm_to_index(nir_nm, b, cube_start_nm, cube_end_nm)
+        red = cube[:, :, red_idx].astype(np.float32)
+        nir = cube[:, :, nir_idx].astype(np.float32)
+        denom = nir + red
+        denom = np.where(np.abs(denom) < 1e-8, 1e-8, denom)
+        data = (nir - red) / denom
+        logger.info(
+            f"Otsu com NDVI (red={red_nm}nm idx={red_idx}, nir={nir_nm}nm idx={nir_idx})")
+    else:
+        band_nm = float(params.get("band_nm", 800.0))
+        band_idx = _nm_to_index(band_nm, b, cube_start_nm, cube_end_nm)
+        data = cube[:, :, band_idx].astype(np.float32)
+        logger.info(f"Otsu com banda {band_nm}nm (idx={band_idx})")
+
+    # Normaliza para 0-255 (uint8) para Otsu
+    dmin, dmax = float(data.min()), float(data.max())
+    if dmax - dmin < 1e-8:
+        logger.warning("Banda/índice constante. Otsu retorna máscara vazia.")
+        return np.zeros((h, w), dtype=np.uint8)
+
+    data_norm = ((data - dmin) / (dmax - dmin) * 255.0).astype(np.uint8)
+    thresh, binary = cv2.threshold(
+        data_norm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
+    logger.info(f"Otsu threshold: {thresh:.1f} (normalizado 0-255)")
+
+    mask = (binary > 0).astype(np.uint8)
+    if invert:
+        mask = 1 - mask
+        logger.info("Máscara Otsu invertida.")
+
+    logger.info(f"Otsu: {int(mask.sum())} pixels classificados como folha")
     return mask
