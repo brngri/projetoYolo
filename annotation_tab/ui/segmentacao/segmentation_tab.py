@@ -216,8 +216,8 @@ class SegmentationTab:
 
         left = ttk.Frame(paned)
         right = ttk.Frame(paned)
-        paned.add(left, weight=3)
-        paned.add(right, weight=4)
+        paned.add(left, weight=1)      
+        paned.add(right, weight=4)     
 
         params_inner = self._make_scrollable(left)
         self._build_params_panel(params_inner)
@@ -228,9 +228,17 @@ class SegmentationTab:
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         inner = ttk.Frame(canvas)
 
-        inner.bind("<Configure>",
-                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas_window = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            # Faz o frame interno ocupar toda a largura visível do canvas
+            canvas.itemconfigure(canvas_window, width=event.width)
+
+        inner.bind("<Configure>", _on_inner_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
         canvas.configure(yscrollcommand=scrollbar.set)
 
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -244,6 +252,9 @@ class SegmentationTab:
         return inner
 
     def _build_params_panel(self, parent: ttk.Frame) -> None:
+        # Coluna 0 (única) estica horizontalmente
+        parent.columnconfigure(0, weight=1)
+
         r = 0
         self._build_paths_section(parent, r); r += 1
         self._build_method_section(parent, r); r += 1
