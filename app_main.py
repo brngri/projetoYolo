@@ -2,8 +2,9 @@ import tkinter as tk
 from tkinter import ttk
 
 from tab_radiometria import RadiometricTab
-from annotation_tab.main import create_annotation_tab     # ajuste o nome real
+from annotation_tab.main import create_annotation_tab
 from annotation_tab.ui.segmentacao.segmentation_tab import create_segmentation_tab
+from annotation_tab.ui.embedding.embedding_tab import create_embedding_tab
 
 
 class AppMain:
@@ -20,17 +21,20 @@ class AppMain:
         notebook.add(frame_rad, text="1. Pré-processamento")
         self.tab_rad = RadiometricTab(frame_rad)
 
-        # ========== ABA 2 ==========                                   # <-- NOVO
-        frame_seg = ttk.Frame(notebook)                                # <-- NOVO
-        notebook.add(frame_seg, text="2. Segmentação")                 # <-- NOVO
+        # ========== ABA 2 ==========
+        frame_seg = ttk.Frame(notebook)
+        notebook.add(frame_seg, text="2. Segmentação")
         self.tab_seg = create_segmentation_tab(frame_seg)
 
         # ========== ABA 3 ==========
+        frame_emb = ttk.Frame(notebook)
+        notebook.add(frame_emb, text="3. Embedding")
+        self.tab_emb = create_embedding_tab(frame_emb)
+
+        # ========== ABA 4 ==========
         frame_anot = ttk.Frame(notebook)
         notebook.add(frame_anot, text="4. Anotação")
         self.tab_anot = create_annotation_tab(frame_anot)
-
-                      # <-- NOVO
 
         self._center_window()
 

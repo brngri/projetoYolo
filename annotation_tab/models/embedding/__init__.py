@@ -1,0 +1,1 @@
+"""Pacote de modelos de embedding espectral."""
