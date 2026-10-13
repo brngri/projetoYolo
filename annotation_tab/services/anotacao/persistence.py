@@ -1,14 +1,15 @@
 # annotation_tab/services/persistence.py
 """
 Serviço de persistência para anotações e configurações.
-Inclui exportação YOLO e NPY.
+Inclui exportação YOLO, NPY e YAML.
 """
 
 import os
 import json
 import shutil
 import logging
-import numpy as np  # <-- ADICIONAR ESTA LINHA
+import yaml
+import numpy as np
 from typing import Optional, Callable, Dict, List, Tuple
 
 from ...models.anotacao.class_manager import ClassManager
@@ -17,8 +18,9 @@ logger = logging.getLogger("AnnotationTab.Persistence")
 
 # Constantes
 CONFIG_FILE = 'classes_config.json'
-# MAPPING_FILE = 'classes_mapping.txt'  # <--- REMOVIDO (não é mais usado)
 YOLO_MAPPING_FILE = 'yolo_classes.txt'
+NPY_FOLDER = 'annotations_npy'
+YAML_FOLDER = 'annotations_yaml'
 
 
 class AnnotationPersistence:
@@ -130,12 +132,12 @@ class AnnotationPersistence:
         exporter = YoloExporter(self.class_manager, self.log)
         return exporter.export(image_path, destino)
 
-    # --- Exportação NPY (NOVO) ---
+    # --- Exportação NPY ---
 
     def export_npy(self, image_path: str, destino: str) -> bool:
         """
         Exporta anotações em formato NPY.
-        
+
         Estrutura do arquivo .npy:
         - Dicionário com chaves:
             - 'bboxes': dict {class_id: [(x1,y1,x2,y2), ...]}
@@ -145,14 +147,12 @@ class AnnotationPersistence:
             - 'image_path': str
         """
         try:
-            # Cria pasta para NPY
-            pasta_npy = os.path.join(destino, 'annotations_npy')
+            pasta_npy = os.path.join(destino, NPY_FOLDER)
             os.makedirs(pasta_npy, exist_ok=True)
 
             nome_base = os.path.splitext(os.path.basename(image_path))[0]
             npy_path = os.path.join(pasta_npy, nome_base + '_annotations.npy')
 
-            # Prepara dados
             data = {
                 'image_path': image_path,
                 'image_shape': [self.class_manager._ny, self.class_manager._nx],
@@ -161,33 +161,27 @@ class AnnotationPersistence:
                 'polygons': {}
             }
 
-            # Coleta dados de cada classe
             for cid, info in self.class_manager.classes.items():
                 if info['is_background']:
                     continue
-                
-                # Informações da classe
+
                 data['classes'][str(cid)] = {
                     'name': info['name'],
                     'color': info['color'],
                     'is_background': info['is_background']
                 }
 
-                # Bboxes
                 if info['bboxes']:
                     data['bboxes'][str(cid)] = info['bboxes']
 
-                # Polígonos
                 if info['polygons']:
                     data['polygons'][str(cid)] = info['polygons']
 
-            # Salva como NPY
-            np.save(npy_path, data)
-            
-            # Contagem para log
+            np.save(npy_path, data, allow_pickle=True)
+
             total_bboxes = sum(len(v) for v in data['bboxes'].values())
             total_polygons = sum(len(v) for v in data['polygons'].values())
-            
+
             self.log(f"   💾 NPY salvo: {nome_base}_annotations.npy")
             self.log(f"      BBoxes: {total_bboxes}, Polígonos: {total_polygons}")
             return True
@@ -197,22 +191,141 @@ class AnnotationPersistence:
             self.log(f"❌ Erro ao salvar NPY: {e}")
             return False
 
-    # --- Exportação combinada (NOVO) ---
+    # --- Exportação YAML (NOVO) ---
+
+    def export_yaml(self, image_path: str, destino: str) -> bool:
+        """
+        Exporta anotações em formato YAML.
+
+        Estrutura do arquivo .yaml:
+        image_path: str
+        image_shape: [h, w]
+        classes:
+          <cid>:
+            name: str
+            color: str
+            bboxes: [[x1,y1,x2,y2], ...]
+            polygons: [[[x,y], ...], ...]
+        """
+        try:
+            pasta_yaml = os.path.join(destino, YAML_FOLDER)
+            os.makedirs(pasta_yaml, exist_ok=True)
+
+            nome_base = os.path.splitext(os.path.basename(image_path))[0]
+            yaml_path = os.path.join(pasta_yaml, nome_base + '.yaml')
+
+            data = {
+                'image_path': image_path,
+                'image_shape': [self.class_manager._ny, self.class_manager._nx],
+                'classes': {}
+            }
+
+            total_bboxes = 0
+            total_polygons = 0
+
+            for cid, info in self.class_manager.classes.items():
+                if info['is_background']:
+                    continue
+                if not info['bboxes'] and not info['polygons']:
+                    continue
+
+                # Converte tuples em listas para serialização limpa no YAML
+                bboxes = [list(map(float, b)) for b in info['bboxes']]
+                polygons = [
+                    [list(map(float, pt)) for pt in poly]
+                    for poly in info['polygons']
+                ]
+
+                data['classes'][str(cid)] = {
+                    'name': info['name'],
+                    'color': info['color'],
+                    'bboxes': bboxes,
+                    'polygons': polygons
+                }
+
+                total_bboxes += len(bboxes)
+                total_polygons += len(polygons)
+
+            with open(yaml_path, 'w', encoding='utf-8') as f:
+                yaml.safe_dump(
+                    data,
+                    f,
+                    sort_keys=False,
+                    allow_unicode=True,
+                    default_flow_style=False
+                )
+
+            self.log(f"   📄 YAML salvo: {nome_base}.yaml")
+            self.log(f"      BBoxes: {total_bboxes}, Polígonos: {total_polygons}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Erro ao salvar YAML: {e}")
+            self.log(f"❌ Erro ao salvar YAML: {e}")
+            return False
+
+    def load_yaml(self, image_path: str, destino: str) -> bool:
+        """Carrega anotações de um arquivo YAML (equivalente ao load_annotations)."""
+        nome_base = os.path.splitext(os.path.basename(image_path))[0]
+        yaml_path = os.path.join(destino, YAML_FOLDER, nome_base + '.yaml')
+
+        if not os.path.exists(yaml_path):
+            return False
+
+        try:
+            with open(yaml_path, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f)
+
+            if self.class_manager._ny is None or self.class_manager._nx is None:
+                logger.error("Dimensões da imagem não definidas")
+                return False
+
+            h, w = data['image_shape']
+            if h != self.class_manager._ny or w != self.class_manager._nx:
+                logger.warning(f"Shape da imagem mudou, ignorando YAML para {nome_base}")
+                return False
+
+            self.class_manager.clear_annotations()
+
+            # Normaliza para o formato aceito por _restore_annotations
+            normalized = {
+                'classes': {
+                    cid_str: {
+                        'name': cls['name'],
+                        'color': cls['color'],
+                        'bboxes': [tuple(b) for b in cls.get('bboxes', [])],
+                        'polygons': [
+                            [tuple(pt) for pt in poly]
+                            for poly in cls.get('polygons', [])
+                        ]
+                    }
+                    for cid_str, cls in data['classes'].items()
+                }
+            }
+            self._restore_annotations(normalized)
+
+            self.log(f"   📂 YAML carregado com {len(data['classes'])} classes")
+            return True
+
+        except Exception as e:
+            logger.error(f"Erro ao carregar YAML {yaml_path}: {e}")
+            self.log(f"❌ Erro ao carregar YAML: {e}")
+            return False
+
+    # --- Exportação combinada ---
 
     def export_all(self, image_path: str, destino: str) -> Tuple[int, int, bool]:
         """
-        Exporta anotações em todos os formatos (JSON, YOLO, NPY).
+        Exporta anotações em todos os formatos (JSON, YOLO, NPY, YAML).
         Retorna: (num_bbox, num_poly, npy_success)
+
+        YAML e JSON são salvos mas seus retornos não alteram a assinatura
+        para manter compatibilidade com chamadas existentes.
         """
-        # Exporta JSON
-        json_success = self.save_annotations(image_path, destino)
-        
-        # Exporta YOLO
+        self.save_annotations(image_path, destino)          # JSON
         num_bbox, num_poly = self.export_yolo(image_path, destino)
-        
-        # Exporta NPY
         npy_success = self.export_npy(image_path, destino)
-        
+        self.export_yaml(image_path, destino)               # YAML
         return num_bbox, num_poly, npy_success
 
     # --- Métodos privados ---

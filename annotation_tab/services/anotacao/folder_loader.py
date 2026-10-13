@@ -10,6 +10,7 @@ from typing import List, Callable, Optional, Set
 
 EXTENSOES_VALIDAS = ('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.jfif', '.webp', '.heic')
 
+logger = logging.getLogger("AnnotationTab.FolderLoader")
 
 class FolderLoader:
     """Carrega lista de imagens em thread separada e notifica quando pronto."""
@@ -53,10 +54,10 @@ class FolderLoader:
 
     def _get_annotated_images(self) -> Set[str]:
         ja_feitas = set()
-        for sub in ['annotations', 'labels/bbox', 'labels/polygon']:
+        for sub in ['annotations', 'annotations_yaml', 'labels/bbox', 'labels/polygon']:
             path = os.path.join(self.destino, sub)
             if os.path.isdir(path):
                 for f in os.listdir(path):
-                    if f.endswith(('.json', '.txt')):
+                    if f.endswith(('.json', '.txt', '.yaml', '.yml')):
                         ja_feitas.add(os.path.splitext(f)[0])
         return ja_feitas
