@@ -2,9 +2,9 @@ import tkinter as tk
 from tkinter import ttk
 
 from tab_radiometria import RadiometricTab
-from annotation_tab.main import create_annotation_tab
-from annotation_tab.ui.segmentacao.segmentation_tab import create_segmentation_tab
-from annotation_tab.ui.embedding.embedding_tab import create_embedding_tab
+from tab.main import create_annotation_tab
+from tab.ui.segmentacao.segmentation_tab import create_segmentation_tab
+from tab.ui.embedding.embedding_tab import create_embedding_tab
 
 
 class AppMain:
